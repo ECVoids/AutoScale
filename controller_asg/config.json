@@ -1,0 +1,50 @@
+{
+  "_comment": "Configuración del ControllerASG. Los valores de .env tienen precedencia sobre este archivo.",
+
+  "scaling": {
+    "minInstances": 2,
+    "maxInstances": 5,
+    "evalIntervalSeconds": 30,
+    "cooldownUpSeconds": 120,
+    "cooldownDownSeconds": 180
+  },
+
+  "policies": {
+    "scaleUp": {
+      "cpuThresholdPercent": 70.0,
+      "confirmRounds": 2,
+      "description": "Scale-up si avg_cpu >= 70% durante 2 evaluaciones consecutivas"
+    },
+    "scaleDown": {
+      "cpuThresholdPercent": 30.0,
+      "confirmRounds": 3,
+      "description": "Scale-down si avg_cpu <= 30% durante 3 evaluaciones consecutivas"
+    },
+    "unreachableRatioThreshold": 0.5,
+    "description_unreachable": "Scale-up si >= 50% de instancias están UNREACHABLE"
+  },
+
+  "ec2": {
+    "instanceType": "t2.micro",
+    "keyName": "vockey",
+    "amiIdFile": "config_ami.txt",
+    "region": "us-east-1",
+    "tags": {
+      "Project": "AutoScale",
+      "Role": "app-instance"
+    }
+  },
+
+  "monitorS": {
+    "pollInterval": 10,
+    "heartbeatTimeout": 5,
+    "failureThreshold": 3
+  },
+
+  "instanceStates": {
+    "HEALTHY":     "cpu < 60%",
+    "DEGRADED":    "60% <= cpu < 85%",
+    "CRITICAL":    "cpu >= 85%",
+    "UNREACHABLE": "3+ fallos consecutivos de heartbeat"
+  }
+}

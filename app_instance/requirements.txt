@@ -1,0 +1,7 @@
+# app-instance/requirements.txt
+# La AppInstance usa solo stdlib de Python 3.11+, sin dependencias externas.
+# Se listan aquí para explicitar compatibilidad y facilitar extensiones futuras.
+
+# (sin dependencias de terceros actualmente)
+# Si se agrega un framework HTTP más robusto en el futuro, agregar aquí:
+# flask==3.0.3
