@@ -1,0 +1,114 @@
+syntax = "proto3";
+
+package monitor;
+
+// ──────────────────────────────────────────────
+// Mensajes comunes
+// ──────────────────────────────────────────────
+
+// Identifica a una AppInstance ante el MonitorS
+message InstanceInfo {
+  string instance_id = 1;   // ID único de la instancia (ej: EC2 instance-id)
+  string ip_address  = 2;   // IP privada o pública de la AppInstance
+  int32  port        = 3;   // Puerto donde corre MonitorC
+}
+
+// ──────────────────────────────────────────────
+// Ping / Pong  (Heartbeat)
+// ──────────────────────────────────────────────
+
+message PingRequest {
+  string instance_id = 1;   // Quién envía el ping
+  int64  timestamp   = 2;   // Unix epoch ms — permite medir latencia
+}
+
+message PongResponse {
+  string instance_id = 1;   // Quién responde
+  int64  timestamp   = 2;   // Echo del timestamp recibido
+  bool   alive       = 3;   // Siempre true si llega; útil para extensiones futuras
+}
+
+// ──────────────────────────────────────────────
+// GetMetrics
+// ──────────────────────────────────────────────
+
+message MetricsRequest {
+  string instance_id = 1;
+}
+
+message MetricsResponse {
+  string instance_id  = 1;
+  float  cpu_load     = 2;   // 0.0 – 100.0  (métrica principal de escalamiento)
+  float  memory_usage = 3;   // 0.0 – 100.0  (complementaria)
+  float  disk_usage   = 4;   // 0.0 – 100.0  (complementaria)
+  int32  active_conns = 5;   // Conexiones activas en la AppInstance
+  int64  timestamp    = 6;   // Momento en que se tomó la muestra
+}
+
+// ──────────────────────────────────────────────
+// Registro  (MonitorC → MonitorS)
+// ──────────────────────────────────────────────
+
+message RegisterRequest {
+  InstanceInfo info    = 1;
+  string       version = 2;  // Versión del agente MonitorC (útil para rolling updates)
+}
+
+message RegisterResponse {
+  bool   success      = 1;
+  string message      = 2;   // Descripción del resultado
+  string monitor_s_id = 3;   // ID del MonitorS que acepta el registro
+}
+
+// ──────────────────────────────────────────────
+// Desregistro  (MonitorC → MonitorS)
+// ──────────────────────────────────────────────
+
+message DeregisterRequest {
+  string instance_id = 1;
+  string reason      = 2;   // "shutdown" | "scale_in" | "error" | etc.
+}
+
+message DeregisterResponse {
+  bool   success = 1;
+  string message = 2;
+}
+
+// ──────────────────────────────────────────────
+// GetStatus  — estado resumido de una instancia
+// (MonitorS lo consulta para diagnóstico rápido)
+// ──────────────────────────────────────────────
+
+message StatusRequest {
+  string instance_id = 1;
+}
+
+message StatusResponse {
+  string instance_id = 1;
+  string state       = 2;   // "HEALTHY" | "DEGRADED" | "CRITICAL"
+  string app_version = 3;   // Versión de la AppInstance
+  int64  uptime_secs = 4;   // Segundos desde que arrancó MonitorC
+}
+
+// ──────────────────────────────────────────────
+// Servicio expuesto por MonitorC
+// (MonitorS actúa como cliente gRPC)
+// ──────────────────────────────────────────────
+
+service MonitorCService {
+
+  // Verifica que la instancia sigue viva
+  rpc Ping (PingRequest) returns (PongResponse);
+
+  // Retorna métricas actuales de la instancia
+  rpc GetMetrics (MetricsRequest) returns (MetricsResponse);
+
+  // La instancia se registra con el MonitorS al arrancar
+  rpc Register (RegisterRequest) returns (RegisterResponse);
+
+  // La instancia se desregistra del MonitorS al apagarse o ser eliminada
+  rpc Deregister (DeregisterRequest) returns (DeregisterResponse);
+
+  // Estado de salud resumido (usado para diagnóstico y dashboards)
+  rpc GetStatus (StatusRequest) returns (StatusResponse);
+}
