@@ -259,6 +259,7 @@ project-root/
 ├── docker-compose.yml
 ├── .gitignore
 └── requirements-global.txt
+```
 ---
 
 # Cómo correr el proyecto localmente
