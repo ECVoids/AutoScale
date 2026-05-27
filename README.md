@@ -259,3 +259,248 @@ project-root/
 ├── docker-compose.yml
 ├── .gitignore
 └── requirements-global.txt
+---
+
+# Cómo correr el proyecto localmente
+
+> Esta sección asume que **Docker y Docker Compose están instalados** en tu máquina. No requiere ninguna cuenta de AWS ni credenciales configuradas. Todo corre en contenedores locales.
+
+---
+
+## Requisitos previos
+
+| Herramienta | Versión mínima | Verificar con |
+|---|---|---|
+| Docker | 24.x | `docker --version` |
+| Docker Compose | 2.x (plugin) | `docker compose version` |
+| Python | 3.11 | `python3 --version` (solo si quieres correr sin Docker) |
+| Git | cualquiera | `git --version` |
+
+---
+
+## Opción A — Correr con Docker Compose (recomendado)
+
+### 1. Clonar el repositorio
+
+```bash
+git clone https://github.com/ECVoids/AutoScale.git
+cd AutoScale
+```
+
+### 2. Regenerar los archivos proto (solo si modificas el .proto)
+
+```bash
+pip install grpcio-tools==1.64.1
+python -m grpc_tools.protoc \
+  -I shared-protos \
+  --python_out=shared-protos \
+  --grpc_python_out=shared-protos \
+  shared-protos/monitor.proto
+```
+
+> Los archivos `monitor_pb2.py` y `monitor_pb2_grpc.py` ya están generados en el repo. Solo necesitas este paso si editas `monitor.proto`.
+
+### 3. Configurar variables de entorno
+
+Cada componente tiene su propio `.env`. Para desarrollo local los valores por defecto funcionan sin cambios. Verifica que existan:
+
+```bash
+ls monitor-c/.env
+ls monitor-s/.env
+ls app-instance/.env
+ls controller-asg/.env   # este necesita ajuste manual (ver nota abajo)
+```
+
+> **controller-asg/.env** contiene `SECURITY_GROUP_ID`, `SUBNET_ID` y `MONITOR_S_HOST` que apuntan a AWS. Para correr localmente sin AWS, el ControllerASG simplemente no podrá crear instancias EC2, pero MonitorS, MonitorC y AppInstance funcionan completos.
+
+### 4. Levantar el stack completo
+
+```bash
+docker compose up --build
+```
+
+Esto construye las imágenes y levanta todos los servicios en orden. Los logs de todos los contenedores aparecen en la misma terminal con prefijo por servicio.
+
+Para correr en background:
+
+```bash
+docker compose up --build -d
+```
+
+Ver logs de un servicio específico:
+
+```bash
+docker compose logs -f monitor-s
+docker compose logs -f monitor-c
+docker compose logs -f app-instance
+```
+
+### 5. Verificar que todo está corriendo
+
+```bash
+docker compose ps
+```
+
+Deberías ver algo así:
+
+```
+NAME              STATUS          PORTS
+monitor-s         running         0.0.0.0:50052->50052/tcp
+monitor-c         running         0.0.0.0:50051->50051/tcp
+app-instance      running         0.0.0.0:8080->8080/tcp
+controller-asg    running
+```
+
+### 6. Probar los endpoints de AppInstance
+
+```bash
+# Liveness check
+curl http://localhost:8080/health
+
+# Estado completo con carga actual
+curl http://localhost:8080/status
+
+# Solo la métrica de carga
+curl http://localhost:8080/metrics
+
+# Forzar una carga manual para probar las políticas de escalamiento
+curl -X POST http://localhost:8080/load/set \
+  -H "Content-Type: application/json" \
+  -d '{"load": 90}'
+```
+
+### 7. Bajar el stack
+
+```bash
+# Detener sin borrar volúmenes ni imágenes
+docker compose down
+
+# Detener y borrar todo (imágenes, volúmenes, redes)
+docker compose down --rmi all --volumes
+```
+
+---
+
+## Opción B — Correr cada componente directamente con Python
+
+Útil para depurar un componente en particular sin levantar todo el stack.
+
+### 1. Crear un entorno virtual (una sola vez)
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate        # Linux / macOS
+# .venv\Scripts\activate         # Windows
+```
+
+### 2. Instalar dependencias de todos los componentes
+
+```bash
+pip install -r monitor-c/requirements.txt
+pip install -r monitor-s/requirements.txt
+pip install -r app-instance/requirements.txt
+pip install -r controller-asg/requirements.txt
+```
+
+O instalar todo de golpe con el archivo global:
+
+```bash
+pip install -r requirements-global.txt
+```
+
+### 3. Exportar el PYTHONPATH para que los módulos encuentren los protos
+
+```bash
+export PYTHONPATH=$(pwd)/shared-protos:$PYTHONPATH
+```
+
+> En Windows (PowerShell): `$env:PYTHONPATH = "$(Get-Location)\shared-protos;$env:PYTHONPATH"`
+
+### 4. Levantar cada componente en terminales separadas
+
+**Terminal 1 — AppInstance:**
+```bash
+source .venv/bin/activate
+cd app-instance
+cp .env ../.env_app && export $(cat .env | xargs)
+python app.py
+```
+
+**Terminal 2 — MonitorC:**
+```bash
+source .venv/bin/activate
+cd monitor-c
+export $(cat .env | xargs)
+python monitor_c_server.py
+```
+
+**Terminal 3 — MonitorS:**
+```bash
+source .venv/bin/activate
+cd monitor-s
+export $(cat .env | xargs)
+python monitor_s.py
+```
+
+**Terminal 4 — ControllerASG (opcional sin AWS):**
+```bash
+source .venv/bin/activate
+cd controller-asg
+export $(cat .env | xargs)
+python controller.py
+```
+
+> El ControllerASG fallará al intentar conectarse a AWS pero el resto del sistema opera normalmente.
+
+---
+
+## Orden de arranque esperado
+
+El sistema tiene dependencias de arranque. El orden correcto es:
+
+```
+AppInstance  →  MonitorC  →  MonitorS  →  ControllerASG
+```
+
+Docker Compose maneja esto automáticamente con `depends_on`. Si corres con Python directamente, respeta este orden o verás errores de conexión en los logs (son recuperables, MonitorC reintenta el registro hasta 10 veces).
+
+---
+
+## Flujo observable en los logs
+
+Una vez todo corriendo, en los logs de MonitorS verás rondas de polling cada `POLL_INTERVAL` segundos:
+
+```
+[MonitorS] INFO  Ronda de polling iniciada — 1 instancias registradas
+[MonitorS] INFO  instance-local-01 → HEALTHY  cpu=34.2%  rtt=1.3ms
+[MonitorS] INFO  Resumen: total=1  healthy=1  unreachable=0  cpu_avg=34.2%
+```
+
+Y en los logs de MonitorC verás las consultas entrantes:
+
+```
+[MonitorC] DEBUG Ping recibido de monitor-s-1
+[MonitorC] DEBUG GetMetrics → {'cpu_load': 34.2, 'memory_usage': 41.7, ...}
+```
+
+Para ver cómo reacciona el sistema ante carga alta, usa el endpoint de forzado:
+
+```bash
+curl -X POST http://localhost:8080/load/set \
+  -H "Content-Type: application/json" \
+  -d '{"load": 92}'
+```
+
+Después de 2–3 rondas de polling verás la instancia pasar a `CRITICAL` en los logs del MonitorS.
+
+---
+
+## Solución de problemas comunes
+
+| Síntoma | Causa probable | Solución |
+|---|---|---|
+| `ModuleNotFoundError: monitor_pb2` | PYTHONPATH no incluye `shared-protos/` | `export PYTHONPATH=$(pwd)/shared-protos:$PYTHONPATH` |
+| MonitorC no se registra | MonitorS aún no está listo | Normal — MonitorC reintenta 10 veces. Espera ~50 s o levanta MonitorS primero |
+| `Connection refused` en puerto 50051/50052 | El servicio no arrancó | Revisa logs con `docker compose logs <servicio>` |
+| ControllerASG falla con `NoCredentialsError` | No hay credenciales AWS configuradas | Esperado en local. El resto del sistema no se ve afectado |
+| Puerto 8080 ocupado | Otro proceso usa el puerto | Cambia `APP_PORT` en `app-instance/.env` y el mapping en `docker-compose.yml` |
